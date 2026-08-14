@@ -1,0 +1,6 @@
+node_modules/
+.env
+*.log
+operations/**/before.json
+operations/**/after.json
+operations/**/*.proposal.json
