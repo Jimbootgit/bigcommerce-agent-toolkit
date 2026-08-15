@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { clientFromEnv } from './client.mjs';
+import { clientFromEnv, containsGraphqlMutation } from './client.mjs';
 import { fetchDocs, searchDocs } from './docs.mjs';
-import { approvalCodeFor, applyProposal, createProposal, loadProposal, saveProposal } from './proposals.mjs';
+import { approvalCodeFor, applySavedProposal, createProposal, loadProposal, saveProposal } from './proposals.mjs';
 import { listResource, RESOURCE_NAMES } from './resources.mjs';
 
 function usage() {
@@ -49,7 +49,7 @@ async function main(args) {
     return print(await listResource(getClient(), action, { query: parseJson(rest[0]), productId }));
   }
   if (area === 'graphql') {
-    if (/\bmutation\b/i.test(action || '')) throw new Error('Use bcat propose for mutations.');
+    if (containsGraphqlMutation(action)) throw new Error('Use bcat propose for mutations.');
     return print(await getClient().request('/graphql', { method: 'POST', body: { query: action, variables: parseJson(rest[0]) } }));
   }
   if (area === 'propose') {
@@ -62,8 +62,9 @@ async function main(args) {
     return print({ approvalCode: approvalCodeFor(proposal, process.env.BIGCOMMERCE_APPROVAL_SECRET) });
   }
   if (area === 'apply') {
-    const { proposal, resolved } = await loadProposal(action, process.env.BIGCOMMERCE_PROPOSALS_DIR);
-    return print({ proposalPath: resolved, response: await applyProposal(getClient(), proposal, rest[0], process.env.BIGCOMMERCE_APPROVAL_SECRET) });
+    return print(await applySavedProposal(
+      getClient(), action, process.env.BIGCOMMERCE_PROPOSALS_DIR, rest[0], process.env.BIGCOMMERCE_APPROVAL_SECRET,
+    ));
   }
   usage();
   process.exitCode = 2;
@@ -72,6 +73,11 @@ async function main(args) {
 function print(value) { console.log(JSON.stringify(value, null, 2)); }
 
 main(process.argv.slice(2)).catch((error) => {
-  console.error(JSON.stringify({ error: error.message, status: error.status || null, details: error.details || null }, null, 2));
+  console.error(JSON.stringify({
+    error: error.message,
+    status: error.status || null,
+    details: error.details || null,
+    rateLimit: error.rateLimit || null,
+  }, null, 2));
   process.exitCode = 1;
 });

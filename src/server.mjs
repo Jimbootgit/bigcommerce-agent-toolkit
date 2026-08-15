@@ -2,13 +2,13 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
-import { clientFromEnv } from './client.mjs';
+import { clientFromEnv, containsGraphqlMutation } from './client.mjs';
 import { fetchDocs, searchDocs } from './docs.mjs';
-import { applyProposal, createProposal, loadProposal, saveProposal } from './proposals.mjs';
+import { createProposal, saveProposal } from './proposals.mjs';
 import { listResource, RESOURCE_NAMES } from './resources.mjs';
 
 export function createServer({ env = process.env, fetchImpl = globalThis.fetch } = {}) {
-  const server = new McpServer({ name: 'bigcommerce-agent-toolkit', version: '0.1.0' });
+  const server = new McpServer({ name: 'bigcommerce-agent-toolkit', version: '0.1.0-alpha.1' });
   const getClient = () => clientFromEnv(env, fetchImpl);
   const proposalsDir = () => env.BIGCOMMERCE_PROPOSALS_DIR;
 
@@ -53,7 +53,7 @@ export function createServer({ env = process.env, fetchImpl = globalThis.fetch }
     query: z.string().min(1),
     variables: z.record(z.any()).default({}),
   }, async ({ query, variables }) => {
-    if (/\bmutation\b/i.test(query)) throw new Error('GraphQL mutations require a proposal and explicit approval.');
+    if (containsGraphqlMutation(query)) throw new Error('GraphQL mutations require a proposal and explicit approval.');
     return textResult(await getClient().request('/graphql', { method: 'POST', body: { query, variables } }));
   });
 
@@ -69,15 +69,6 @@ export function createServer({ env = process.env, fetchImpl = globalThis.fetch }
     const proposal = createProposal({ storeHash: client.storeHash, method, apiPath: path, query, body, reason });
     const savedTo = await saveProposal(proposal, outputPath, proposalsDir());
     return textResult({ proposal, savedTo, applied: false });
-  });
-
-  server.tool('mutation_apply', 'Apply a saved proposal only when its exact approval code is supplied.', {
-    proposalPath: z.string().min(1),
-    approvalCode: z.string().length(16),
-  }, async ({ proposalPath, approvalCode }) => {
-    const { proposal, resolved } = await loadProposal(proposalPath, proposalsDir());
-    const response = await applyProposal(getClient(), proposal, approvalCode, env.BIGCOMMERCE_APPROVAL_SECRET);
-    return textResult({ proposalPath: resolved, response });
   });
 
   return server;

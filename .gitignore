@@ -4,3 +4,5 @@ node_modules/
 operations/**/before.json
 operations/**/after.json
 operations/**/*.proposal.json
+operations/**/*.proposal.json.applying
+operations/**/*.proposal.json.applied.json

@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { BigCommerceClient } from '../src/client.mjs';
-import { approvalCodeFor, applyProposal, createProposal, loadProposal, saveProposal } from '../src/proposals.mjs';
+import { approvalCodeFor, applySavedProposal, createProposal, loadProposal, saveProposal } from '../src/proposals.mjs';
 
 const APPROVAL_SECRET = 'test-only-approval-secret-at-least-32-characters';
 
@@ -30,20 +30,31 @@ test('proposal integrity and approval code gate writes', async () => {
       return new Response(JSON.stringify({ data: { id: 42, name } }), { status: 200 });
     },
   });
-  await assert.rejects(() => applyProposal(client, proposal, 'wrong-code'));
+  await assert.rejects(() => applySavedProposal(client, 'proposal.json', dir, 'wrong-code', APPROVAL_SECRET));
   assert.equal(calls.length, 0);
   const approvalCode = approvalCodeFor(proposal, APPROVAL_SECRET);
-  const result = await applyProposal(client, proposal, approvalCode, APPROVAL_SECRET);
+  const { response: result } = await applySavedProposal(client, 'proposal.json', dir, approvalCode, APPROVAL_SECRET);
   assert.equal(result.mutation.data.data.name, 'Updated');
   assert.equal(result.snapshots.before.response.data.data.name, 'Original');
   assert.equal(result.snapshots.after.response.data.data.name, 'Updated');
   assert.deepEqual(calls.map((call) => call.options.method), ['GET', 'PUT', 'GET']);
+  const audit = JSON.parse(await fs.readFile(`${proposalPath}.applied.json`, 'utf8'));
+  assert.equal(audit.status, 'applied');
+  assert.equal(audit.proposalDigest, proposal.digest);
+  assert.equal(audit.snapshots.before.response.data.data.name, 'Original');
+  await assert.rejects(
+    () => applySavedProposal(client, 'proposal.json', dir, approvalCode, APPROVAL_SECRET),
+    /already (?:applied|consumed)/i,
+  );
+  assert.equal(calls.length, 3);
 });
 
 test('snapshot failures are recorded without bypassing an approved write', async () => {
   const proposal = createProposal({
     storeHash: 'abc123', method: 'DELETE', apiPath: '/v3/content/scripts/4', reason: 'Remove obsolete script',
   });
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'bcat-'));
+  const proposalPath = await saveProposal(proposal, 'delete.proposal.json', dir);
   const methods = [];
   const client = {
     storeHash: 'abc123',
@@ -57,13 +68,97 @@ test('snapshot failures are recorded without bypassing an approved write', async
       return { status: 204, data: null };
     },
   };
-  const result = await applyProposal(client, proposal, approvalCodeFor(proposal, APPROVAL_SECRET), APPROVAL_SECRET);
+  const { response: result } = await applySavedProposal(
+    client, 'delete.proposal.json', dir, approvalCodeFor(proposal, APPROVAL_SECRET), APPROVAL_SECRET,
+  );
   assert.equal(result.mutation.status, 204);
   assert.deepEqual(methods, ['GET', 'DELETE', 'GET']);
   assert.deepEqual(result.snapshots.before, {
     captured: false, error: { message: 'Resource not found', status: 404 },
   });
   assert.equal(result.snapshots.after.captured, false);
+  const audit = JSON.parse(await fs.readFile(`${proposalPath}.applied.json`, 'utf8'));
+  assert.equal(audit.snapshots.after.captured, false);
+});
+
+test('multi-byte approval codes fail cleanly', async () => {
+  const proposal = createProposal({
+    storeHash: 'abc123', method: 'DELETE', apiPath: '/v3/content/scripts/4', reason: 'Remove obsolete script',
+  });
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'bcat-'));
+  const proposalPath = await saveProposal(proposal, 'unicode.proposal.json', dir);
+  const client = { storeHash: 'abc123', request: async () => ({ status: 204, data: null }) };
+  await assert.rejects(
+    () => applySavedProposal(client, 'unicode.proposal.json', dir, 'é'.repeat(16), APPROVAL_SECRET),
+    /approval code does not match/i,
+  );
+});
+
+test('failed or uncertain mutations are consumed and audited', async () => {
+  const proposal = createProposal({
+    storeHash: 'abc123', method: 'POST', apiPath: '/v3/catalog/products',
+    body: { name: 'Maybe created' }, reason: 'Create approved product',
+  });
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'bcat-'));
+  const proposalPath = await saveProposal(proposal, 'create.proposal.json', dir);
+  let mutations = 0;
+  const client = {
+    storeHash: 'abc123',
+    request: async (_path, options) => {
+      if (options.method === 'GET') return { status: 200, data: { data: [] } };
+      mutations += 1;
+      const error = new Error('Connection closed after send');
+      error.status = 503;
+      throw error;
+    },
+  };
+  const approvalCode = approvalCodeFor(proposal, APPROVAL_SECRET);
+  await assert.rejects(
+    () => applySavedProposal(client, 'create.proposal.json', dir, approvalCode, APPROVAL_SECRET),
+    /connection closed/i,
+  );
+  const audit = JSON.parse(await fs.readFile(`${proposalPath}.applied.json`, 'utf8'));
+  assert.equal(audit.status, 'failed-or-uncertain');
+  assert.equal(audit.error.status, 503);
+  await assert.rejects(
+    () => applySavedProposal(client, 'create.proposal.json', dir, approvalCode, APPROVAL_SECRET),
+    /already (?:applied|consumed)/i,
+  );
+  assert.equal(mutations, 1);
+});
+
+test('concurrent applications execute the mutation only once', async () => {
+  const proposal = createProposal({
+    storeHash: 'abc123', method: 'POST', apiPath: '/v3/catalog/products',
+    body: { name: 'One product' }, reason: 'Create one approved product',
+  });
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'bcat-'));
+  const proposalPath = await saveProposal(proposal, 'concurrent.proposal.json', dir);
+  let mutationStarted;
+  const started = new Promise((resolve) => { mutationStarted = resolve; });
+  let releaseMutation;
+  const release = new Promise((resolve) => { releaseMutation = resolve; });
+  let mutations = 0;
+  const client = {
+    storeHash: 'abc123',
+    request: async (_path, options) => {
+      if (options.method === 'GET') return { status: 200, data: { data: [] } };
+      mutations += 1;
+      mutationStarted();
+      await release;
+      return { status: 201, data: { data: { id: 1 } } };
+    },
+  };
+  const approvalCode = approvalCodeFor(proposal, APPROVAL_SECRET);
+  const first = applySavedProposal(client, 'concurrent.proposal.json', dir, approvalCode, APPROVAL_SECRET);
+  await started;
+  await assert.rejects(
+    () => applySavedProposal(client, 'concurrent.proposal.json', dir, approvalCode, APPROVAL_SECRET),
+    /already consumed|unresolved/i,
+  );
+  releaseMutation();
+  await first;
+  assert.equal(mutations, 1);
 });
 
 test('tampered proposals are rejected', async () => {

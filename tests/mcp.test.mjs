@@ -23,7 +23,7 @@ test('MCP server discovers tools and executes a read through the client', async 
 
   const listed = await client.listTools();
   assert.deepEqual(listed.tools.map((tool) => tool.name).sort(), [
-    'catalog_list', 'docs_get', 'docs_search', 'graphql_query', 'mutation_apply', 'mutation_propose', 'resource_list', 'store_get',
+    'catalog_list', 'docs_get', 'docs_search', 'graphql_query', 'mutation_propose', 'resource_list', 'store_get',
   ]);
   const called = await client.callTool({ name: 'store_get', arguments: { path: '/v3/store', query: {} } });
   assert.match(called.content[0].text, /Fixture Store/);
@@ -40,6 +40,12 @@ test('MCP server discovers tools and executes a read through the client', async 
   });
   assert.equal(rejected.isError, true);
   assert.match(rejected.content[0].text, /mutations require a proposal/i);
+
+  const fieldNamedMutation = await client.callTool({
+    name: 'graphql_query',
+    arguments: { query: '{ mutation { id } }', variables: {} },
+  });
+  assert.notEqual(fieldNamedMutation.isError, true);
 
   await client.close();
   await server.close();

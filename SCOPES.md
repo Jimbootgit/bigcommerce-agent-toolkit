@@ -24,9 +24,9 @@ The Channels endpoint accepts several scope families. Prefer one read-only scope
 
 ## Mutation tools
 
-`mutation_propose` does not call BigCommerce and needs no additional scope. `mutation_apply` needs the modify scope required by the exact proposed endpoint. The toolkit cannot safely reduce that requirement because it supports reviewed relative API paths.
+`mutation_propose` does not call BigCommerce and needs no additional scope. CLI-only `bcat apply` needs the modify scope required by the exact proposed endpoint. The toolkit cannot safely reduce that requirement because it supports reviewed relative API paths.
 
-Keep write-capable credentials and `BIGCOMMERCE_APPROVAL_SECRET` in separate trust domains. An approval secret available to the agent does not provide an independent human approval boundary.
+Keep write-capable credentials and `BIGCOMMERCE_APPROVAL_SECRET` in separate trust domains. Do not place the approval secret in the MCP server environment. An approval secret available to the agent does not provide an independent human approval boundary.
 
 ## Embedded apps are separate
 

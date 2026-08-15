@@ -103,23 +103,113 @@ export async function loadProposal(inputPath, baseDir) {
   return { proposal, resolved };
 }
 
-export async function applyProposal(client, proposal, approvalCode, approvalSecret) {
+export async function applySavedProposal(client, inputPath, baseDir, approvalCode, approvalSecret) {
+  const { proposal, resolved } = await loadProposal(inputPath, baseDir);
+  const response = await applyProposal(client, proposal, approvalCode, approvalSecret, resolved);
+  return { proposalPath: resolved, response };
+}
+
+async function applyProposal(client, proposal, approvalCode, approvalSecret, proposalPath) {
+  if (proposal.digest !== proposalDigest(proposal)) throw new Error('Proposal integrity check failed.');
   const expected = approvalCodeFor(proposal, approvalSecret);
-  const supplied = String(approvalCode || '');
-  if (supplied.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))) {
+  const supplied = Buffer.from(String(approvalCode || ''));
+  const expectedBuffer = Buffer.from(expected);
+  if (supplied.length !== expectedBuffer.length || !crypto.timingSafeEqual(supplied, expectedBuffer)) {
     throw new Error('Approval code does not match the proposal.');
   }
   if (client.storeHash !== proposal.storeHash) {
     throw new Error('Proposal store hash does not match the configured store.');
   }
+  const auditPaths = await claimProposalApplication(proposalPath, proposal);
   const before = await captureSnapshot(client, proposal);
-  const mutation = await client.request(proposal.path, {
+  try {
+    const mutation = await client.request(proposal.path, {
+      method: proposal.method,
+      query: proposal.query,
+      body: proposal.body,
+    });
+    const after = await captureSnapshot(client, proposal);
+    const result = { mutation, snapshots: { before, after } };
+    await finalizeProposalApplication(auditPaths, {
+      status: 'applied',
+      proposalDigest: proposal.digest,
+      proposal: auditProposal(proposal),
+      appliedAt: new Date().toISOString(),
+      ...result,
+    });
+    return result;
+  } catch (error) {
+    await finalizeProposalApplication(auditPaths, {
+      status: 'failed-or-uncertain',
+      proposalDigest: proposal.digest,
+      proposal: auditProposal(proposal),
+      appliedAt: new Date().toISOString(),
+      snapshots: { before, after: null },
+      error: { message: error.message, status: error.status || null },
+    });
+    throw error;
+  }
+}
+
+async function claimProposalApplication(proposalPath, proposal) {
+  const resolved = path.resolve(String(proposalPath || ''));
+  if (!proposalPath) throw new Error('A saved proposal path is required to enforce one-time application.');
+  const appliedPath = `${resolved}.applied.json`;
+  const claimPath = `${resolved}.applying`;
+  if (await pathExists(appliedPath)) throw new Error('Proposal was already applied or consumed.');
+  let handle;
+  try {
+    handle = await fs.open(claimPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW, 0o600);
+    await handle.writeFile(`${JSON.stringify({
+      status: 'applying', proposalDigest: proposal.digest, startedAt: new Date().toISOString(),
+    }, null, 2)}\n`);
+    await handle.sync();
+  } catch (error) {
+    if (error.code === 'EEXIST') throw new Error('Proposal was already consumed or its application is unresolved.');
+    throw error;
+  } finally {
+    await handle?.close();
+  }
+  return { appliedPath, claimPath };
+}
+
+async function finalizeProposalApplication({ appliedPath, claimPath }, audit) {
+  const tempPath = `${appliedPath}.${crypto.randomUUID()}.tmp`;
+  let handle;
+  try {
+    handle = await fs.open(tempPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW, 0o600);
+    await handle.writeFile(`${JSON.stringify(audit, null, 2)}\n`);
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await fs.rename(tempPath, appliedPath);
+    await fs.unlink(claimPath);
+  } catch (error) {
+    await handle?.close();
+    await fs.rm(tempPath, { force: true });
+    throw error;
+  }
+}
+
+async function pathExists(filePath) {
+  try {
+    await fs.lstat(filePath);
+    return true;
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+function auditProposal(proposal) {
+  return {
+    storeHash: proposal.storeHash,
     method: proposal.method,
+    path: proposal.path,
     query: proposal.query,
     body: proposal.body,
-  });
-  const after = await captureSnapshot(client, proposal);
-  return { mutation, snapshots: { before, after } };
+    reason: proposal.reason,
+  };
 }
 
 async function captureSnapshot(client, proposal) {
