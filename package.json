@@ -1,6 +1,6 @@
 {
   "name": "bigcommerce-agent-toolkit",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha",
   "description": "Read-first BigCommerce MCP and CLI with approval-gated mutations",
   "license": "Apache-2.0",
   "repository": {
