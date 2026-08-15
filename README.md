@@ -5,7 +5,7 @@ A read-first BigCommerce toolkit for Hermes and other MCP clients. It combines o
 It is intentionally smaller and safer than a generic “run any request” wrapper.
 
 > [!WARNING]
-> This repository is an early alpha. Read operations are the intended default. Writes require a separately held approval secret, but this control still depends on keeping that secret outside the agent environment. Keep write-capable tokens disabled until the remaining hardening items in `ROADMAP.md` are complete.
+> This repository is an early alpha. Read operations are the intended default. Writes require a separately held approval secret, but this control still depends on keeping that secret outside the agent environment. Keep write-capable tokens disabled unless that independent approval boundary is configured and verified.
 
 ## Capabilities
 

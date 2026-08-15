@@ -14,7 +14,7 @@ Prepare a small, honest public alpha that gives MCP clients safe BigCommerce doc
 - [x] Document the minimum OAuth scopes for each tool.
 - [x] Run an independent security and API-design review.
 - [x] Confirm no client names, store hashes, credentials, private paths, or store data exist in the repository or Git history.
-- [ ] Obtain explicit human approval before making the GitHub repository public or publishing a release.
+- [x] Obtain explicit human approval before making the GitHub repository public or publishing a release.
 
 ## Pilot evidence
 
